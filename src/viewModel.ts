@@ -1,20 +1,29 @@
 import { cloneScenario, summarizeScenario, validateDevice, validateScenarioSettings } from './domain';
 import { findScenario, type EnergyRepository } from './repository';
-import type { EnergyDevice, EnergyDocument, EnergyScenario, Notice, ViewStatus } from './types';
+import { SaveScheduler, type SaveSchedulerOptions } from './services/saveScheduler';
+import type { EnergyDevice, EnergyDocument, EnergyScenario, Notice, SaveState, ViewStatus } from './types';
 
 export interface EnergyLensState {
   document: EnergyDocument | null;
   status: ViewStatus;
   notice: Notice | null;
+  saveState: SaveState;
 }
 
 type Listener = (state: EnergyLensState) => void;
 
 export class EnergyLensViewModel {
-  private state: EnergyLensState = { document: null, status: 'loading', notice: null };
+  private state: EnergyLensState = { document: null, status: 'loading', notice: null, saveState: 'saved' };
   private readonly listeners = new Set<Listener>();
+  private readonly scheduler: SaveScheduler<EnergyDocument>;
 
-  constructor(private readonly repository: EnergyRepository) {}
+  constructor(private readonly repository: EnergyRepository, schedulerOptions: SaveSchedulerOptions = {}) {
+    this.scheduler = new SaveScheduler<EnergyDocument>((document) => this.repository.save(document), {
+      ...schedulerOptions,
+      onSaved: () => this.handleSaved(),
+      onFailed: () => this.handleSaveFailed(),
+    });
+  }
 
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener);
@@ -25,9 +34,9 @@ export class EnergyLensViewModel {
 
   initialize(): void {
     try {
-      this.state = { document: this.repository.load(), status: 'ready', notice: null };
+      this.state = { document: this.repository.load(), status: 'ready', notice: null, saveState: 'saved' };
     } catch {
-      this.state = { document: null, status: 'error', notice: { kind: 'error', text: '本地数据读取失败，请刷新重试' } };
+      this.state = { document: null, status: 'error', notice: { kind: 'error', text: '本地数据读取失败，请刷新重试' }, saveState: 'saved' };
     }
     this.emit();
   }
@@ -98,8 +107,21 @@ export class EnergyLensViewModel {
   }
 
   complete(): void {
+    // 宣称"已保存"之前必须先落盘；落盘失败则交给失败回调暴露，不假装成功
+    if (!this.scheduler.flush()) return;
     this.state = { ...this.state, status: 'completed', notice: { kind: 'success', text: '本次推演已保存，可随时回来继续调整' } };
     this.emit();
+  }
+
+  /** 立即落盘所有待写修改：页面卸载前、手动重试都会走这里。 */
+  flushPendingSave(): void {
+    this.scheduler.flush();
+  }
+
+  /** 卸载前最后一次落盘，并清理合并/重试计时器。 */
+  dispose(): void {
+    this.scheduler.flush();
+    this.scheduler.dispose();
   }
 
   private commit(update: (scenario: EnergyScenario) => EnergyScenario, notice: string): void {
@@ -109,12 +131,25 @@ export class EnergyLensViewModel {
   }
 
   private persist(document: EnergyDocument, notice: string): void {
-    try {
-      this.repository.save(document);
-      this.state = { document, status: 'editing', notice: { kind: 'success', text: notice } };
-    } catch {
-      this.state = { ...this.state, status: 'error', notice: { kind: 'error', text: '保存失败，当前页面仍可继续编辑' } };
-    }
+    // 乐观更新界面，落盘合并到调度器里批量执行，避免每次输入都同步序列化
+    this.state = { document, status: 'editing', notice: { kind: 'success', text: notice }, saveState: 'saving' };
+    this.scheduler.schedule(document);
+    this.emit();
+  }
+
+  private handleSaved(): void {
+    const recovered = this.state.saveState === 'failed';
+    this.state = {
+      ...this.state,
+      saveState: 'saved',
+      status: recovered && this.state.status === 'error' ? 'editing' : this.state.status,
+      notice: recovered ? { kind: 'success', text: '已恢复自动保存' } : this.state.notice,
+    };
+    this.emit();
+  }
+
+  private handleSaveFailed(): void {
+    this.state = { ...this.state, status: 'error', saveState: 'failed', notice: { kind: 'error', text: '保存失败，会自动重试；也可以点「立即重试」' } };
     this.emit();
   }
 

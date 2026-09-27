@@ -9,6 +9,10 @@ function App() {
   const summary = vm.activeSummary;
   if (state.status === 'loading' || !active || !summary) return <main className="loading-screen"><div className="pulse" /><p>正在恢复你的能耗方案…</p></main>;
   const maxKwh = Math.max(...summary.devices.map((device) => device.monthlyKwh), 1);
+  const saveLabel = state.saveState === 'saving' ? '保存中…'
+    : state.saveState === 'failed' ? '保存失败'
+    : state.status === 'error' ? '需要注意'
+    : '已自动保存';
   const baseline = state.document?.scenarios.find((item) => item.id !== active.id);
   const comparisonValue = baseline && baseline.id !== active.id ? baseline.devices.reduce((total, device) => total + (device.watts * device.dailyHours * baseline.daysPerMonth) / 1000, 0) : null;
   const deltaKwh = comparisonValue === null ? null : summary.total.monthlyKwh - comparisonValue;
@@ -16,7 +20,7 @@ function App() {
   return <div className="app-shell">
     <header className="topbar">
       <div className="brand"><span className="brand-mark">⌁</span><span>Energy<span>Lens</span></span></div>
-      <div className="topbar-right"><span className="save-state"><i /> {state.status === 'error' ? '需要注意' : '已自动保存'}</span><button className="help-button" aria-label="帮助">?</button></div>
+      <div className="topbar-right"><span className={`save-state ${state.saveState}`}><i /> {saveLabel}</span><button className="help-button" aria-label="帮助">?</button></div>
     </header>
 
     <main className="page-wrap">
@@ -25,7 +29,7 @@ function App() {
         <div className="hero-spark"><span>本月预计用电</span><strong>{formatNumber(summary.total.monthlyKwh)} <small>kWh</small></strong><div className="sparkline"><i /><i /><i /><i /><i /><i /><i /></div></div>
       </section>
 
-      {state.notice && <div className={`notice ${state.notice.kind}`} role="status"><span>{state.notice.kind === 'error' ? '!' : '✓'}</span>{state.notice.text}</div>}
+      {state.notice && <div className={`notice ${state.notice.kind}`} role="status"><span>{state.notice.kind === 'error' ? '!' : '✓'}</span>{state.notice.text}{state.saveState === 'failed' && <button className="notice-retry" onClick={() => vm.flushPendingSave()}>立即重试</button>}</div>}
 
       <div className="workspace-grid">
         <section className="panel setup-panel">
