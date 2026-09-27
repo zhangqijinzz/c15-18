@@ -22,6 +22,8 @@ export interface EnergyDocument {
 
 export type ViewStatus = 'loading' | 'ready' | 'editing' | 'error' | 'completed';
 
+export type PersistState = 'idle' | 'pending' | 'saved' | 'failed';
+
 export interface Notice {
   kind: 'success' | 'error' | 'info';
   text: string;

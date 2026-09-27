@@ -1,20 +1,27 @@
 import { cloneScenario, summarizeScenario, validateDevice, validateScenarioSettings } from './domain';
-import { findScenario, type EnergyRepository } from './repository';
-import type { EnergyDevice, EnergyDocument, EnergyScenario, Notice, ViewStatus } from './types';
+import { findScenario, type EnergyRepository, type PersistEvent } from './repository';
+import type { EnergyDevice, EnergyDocument, EnergyScenario, Notice, PersistState, ViewStatus } from './types';
 
 export interface EnergyLensState {
   document: EnergyDocument | null;
   status: ViewStatus;
   notice: Notice | null;
+  persist: PersistState;
 }
 
 type Listener = (state: EnergyLensState) => void;
 
+const SAVE_FAILED_TEXT = '保存失败，修改仍保留在本页，可点击重试';
+const SAVE_RECOVERED_TEXT = '保存已恢复，修改均已落盘';
+
 export class EnergyLensViewModel {
-  private state: EnergyLensState = { document: null, status: 'loading', notice: null };
+  private state: EnergyLensState = { document: null, status: 'loading', notice: null, persist: 'idle' };
   private readonly listeners = new Set<Listener>();
 
-  constructor(private readonly repository: EnergyRepository) {}
+  constructor(private readonly repository: EnergyRepository) {
+    // 合并写的仓库异步回报落盘结果，失败必须在这里浮出水面。
+    this.repository.subscribe?.((event) => this.handlePersistEvent(event));
+  }
 
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener);
@@ -25,9 +32,9 @@ export class EnergyLensViewModel {
 
   initialize(): void {
     try {
-      this.state = { document: this.repository.load(), status: 'ready', notice: null };
+      this.state = { document: this.repository.load(), status: 'ready', notice: null, persist: 'idle' };
     } catch {
-      this.state = { document: null, status: 'error', notice: { kind: 'error', text: '本地数据读取失败，请刷新重试' } };
+      this.state = { document: null, status: 'error', notice: { kind: 'error', text: '本地数据读取失败，请刷新重试' }, persist: 'idle' };
     }
     this.emit();
   }
@@ -98,7 +105,25 @@ export class EnergyLensViewModel {
   }
 
   complete(): void {
-    this.state = { ...this.state, status: 'completed', notice: { kind: 'success', text: '本次推演已保存，可随时回来继续调整' } };
+    // 落盘失败尚未恢复时不覆盖失败提示，避免“假装成功”。
+    const notice = this.state.persist === 'failed' ? this.state.notice : { kind: 'success' as const, text: '本次推演已保存，可随时回来继续调整' };
+    this.state = { ...this.state, status: 'completed', notice };
+    this.emit();
+  }
+
+  retryPersist(): void {
+    if (this.state.persist !== 'failed' || !this.state.document) return;
+    if (this.repository.flush) {
+      // 合并写的仓库里还留着未落盘的修改，结果会通过订阅事件回传。
+      this.repository.flush();
+      return;
+    }
+    try {
+      this.repository.save(this.state.document);
+      this.state = { ...this.state, persist: 'saved', status: 'editing', notice: { kind: 'success', text: SAVE_RECOVERED_TEXT } };
+    } catch {
+      this.state = { ...this.state, persist: 'failed', status: 'error', notice: { kind: 'error', text: SAVE_FAILED_TEXT } };
+    }
     this.emit();
   }
 
@@ -111,9 +136,27 @@ export class EnergyLensViewModel {
   private persist(document: EnergyDocument, notice: string): void {
     try {
       this.repository.save(document);
-      this.state = { document, status: 'editing', notice: { kind: 'success', text: notice } };
+      this.state = { ...this.state, document, status: 'editing', notice: { kind: 'success', text: notice } };
     } catch {
-      this.state = { ...this.state, status: 'error', notice: { kind: 'error', text: '保存失败，当前页面仍可继续编辑' } };
+      this.state = { ...this.state, status: 'error', persist: 'failed', notice: { kind: 'error', text: SAVE_FAILED_TEXT } };
+    }
+    this.emit();
+  }
+
+  private handlePersistEvent(event: PersistEvent): void {
+    if (event === 'pending') {
+      this.state = { ...this.state, persist: 'pending' };
+    } else if (event === 'saved') {
+      // 仅在之前失败过时才改写提示，避免覆盖用户操作的正常反馈。
+      const recovered = this.state.persist === 'failed';
+      this.state = {
+        ...this.state,
+        persist: 'saved',
+        status: recovered && this.state.status === 'error' ? 'editing' : this.state.status,
+        notice: recovered ? { kind: 'success', text: SAVE_RECOVERED_TEXT } : this.state.notice,
+      };
+    } else {
+      this.state = { ...this.state, persist: 'failed', status: 'error', notice: { kind: 'error', text: SAVE_FAILED_TEXT } };
     }
     this.emit();
   }

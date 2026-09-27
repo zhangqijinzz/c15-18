@@ -16,7 +16,7 @@ function App() {
   return <div className="app-shell">
     <header className="topbar">
       <div className="brand"><span className="brand-mark">⌁</span><span>Energy<span>Lens</span></span></div>
-      <div className="topbar-right"><span className="save-state"><i /> {state.status === 'error' ? '需要注意' : '已自动保存'}</span><button className="help-button" aria-label="帮助">?</button></div>
+      <div className="topbar-right"><span className={`save-state ${state.persist === 'failed' || state.status === 'error' ? 'error' : state.persist === 'pending' ? 'pending' : ''}`}><i /> {state.persist === 'failed' ? '保存失败' : state.status === 'error' ? '需要注意' : state.persist === 'pending' ? '保存中…' : '已自动保存'}</span><button className="help-button" aria-label="帮助">?</button></div>
     </header>
 
     <main className="page-wrap">
@@ -25,7 +25,7 @@ function App() {
         <div className="hero-spark"><span>本月预计用电</span><strong>{formatNumber(summary.total.monthlyKwh)} <small>kWh</small></strong><div className="sparkline"><i /><i /><i /><i /><i /><i /><i /></div></div>
       </section>
 
-      {state.notice && <div className={`notice ${state.notice.kind}`} role="status"><span>{state.notice.kind === 'error' ? '!' : '✓'}</span>{state.notice.text}</div>}
+      {state.notice && <div className={`notice ${state.notice.kind}`} role="status"><span>{state.notice.kind === 'error' ? '!' : '✓'}</span>{state.notice.text}{state.persist === 'failed' && <button className="notice-retry" onClick={() => vm.retryPersist()}>重试保存</button>}</div>}
 
       <div className="workspace-grid">
         <section className="panel setup-panel">
